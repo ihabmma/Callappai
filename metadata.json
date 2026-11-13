@@ -1,0 +1,6 @@
+{
+  "name": "المجيب الذكي",
+  "description": "مجيب آلي ذكي للمكالمات الهاتفية مدعوم بالذكاء الاصطناعي وتحويل النص إلى كلام",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">المجيب الذكي</string>
+    <string name="nav_dashboard">لوحة التحكم</string>
+    <string name="nav_history">سجل المكالمات</string>
+    <string name="nav_settings">الإعدادات</string>
+
+    <string name="status_active">المجيب الآلي نشط</string>
+    <string name="status_inactive">المجيب الآلي متوقف</string>
+    <string name="status_ringing">مكالمة واردة</string>
+    <string name="status_in_call">مكالمة نشطة مع الذكاء الاصطناعي</string>
+
+    <string name="notification_channel_name">خدمة المجيب الآلي الذكي</string>
+    <string name="notification_channel_desc">إشعار دائم لمراقبة المكالمات الواردة وتشغيل الرد الذكي</string>
+    <string name="notification_action_stop">إيقاف الخدمة</string>
+    <string name="notification_action_open">فتح التطبيق</string>
+
+    <string name="default_greeting">مرحباً بك، أنا المساعد الذكي الشخصي. كيف يمكنني مساعدتك اليوم؟</string>
+    <string name="default_persona">أنت مساعد هاتفي ذكي ومهذب تتحدث العربية بوضوح واختصار وبطريقة طبيعية تشبه البشر. أجب على المتصل بلطف، اجمع الغرض من الاتصال أو أجب عن استفساراته بدقة في جمل قصيرة ومناسبة للمكالمات الهاتفية.</string>
+    <string name="default_fallback_reply">عذراً، واجهت مشكلة مؤقتة في الاتصال. سأقوم بإبلاغ صاحب الهاتف ليتواصل معك في أقرب وقت.</string>
+</resources>
