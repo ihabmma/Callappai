@@ -19,9 +19,11 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Dashboard
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -39,6 +41,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,6 +55,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -64,9 +70,11 @@ import com.example.core.configureAppCheck
 import com.example.ui.navigation.CallHistoryRoute
 import com.example.ui.navigation.DashboardRoute
 import com.example.ui.navigation.SettingsRoute
+import com.example.ui.navigation.TeamMemoryRoute
 import com.example.ui.screens.CallHistoryScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.SettingsScreen
+import com.example.ui.screens.TeamMemoryScreen
 import com.example.ui.theme.SmartCallResponderTheme
 import com.example.ui.viewmodel.MainViewModel
 
@@ -104,16 +112,35 @@ fun SmartCallResponderApp(
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val liveCallState by viewModel.liveCallState.collectAsStateWithLifecycle()
     val callLogs by viewModel.callLogs.collectAsStateWithLifecycle()
+    val callerProfiles by viewModel.callerProfiles.collectAsStateWithLifecycle()
+    val learningInsights by viewModel.learningInsights.collectAsStateWithLifecycle()
+    val trainedRules by viewModel.trainedRules.collectAsStateWithLifecycle()
+    val scheduledReminders by viewModel.scheduledReminders.collectAsStateWithLifecycle()
+    val storageStats by viewModel.storageStats.collectAsStateWithLifecycle()
     val permissions by viewModel.permissionSummary.collectAsStateWithLifecycle()
     val connectionTestState by viewModel.connectionTestState.collectAsStateWithLifecycle()
     val uiNotice by viewModel.uiNotice.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     var pendingEnableAfterPermission by remember { mutableStateOf(false) }
+
+    // Refresh overlay & battery exemption permissions whenever user returns from System Settings
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshPermissions()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     LaunchedEffect(uiNotice) {
         val message = uiNotice
@@ -148,6 +175,13 @@ fun SmartCallResponderApp(
                 selectedIcon = Icons.Filled.History,
                 unselectedIcon = Icons.Outlined.History,
                 testTag = "nav_history"
+            ),
+            NavItem(
+                route = TeamMemoryRoute,
+                labelRes = R.string.nav_team,
+                selectedIcon = Icons.Filled.Groups,
+                unselectedIcon = Icons.Outlined.Groups,
+                testTag = "nav_team"
             ),
             NavItem(
                 route = SettingsRoute,
@@ -211,7 +245,7 @@ fun SmartCallResponderApp(
                                         contentDescription = label
                                     )
                                 },
-                                label = { Text(text = label) },
+                                label = { Text(text = label, maxLines = 1) },
                                 modifier = Modifier.testTag(item.testTag)
                             )
                         }
@@ -243,7 +277,7 @@ fun SmartCallResponderApp(
                                         contentDescription = label
                                     )
                                 },
-                                label = { Text(text = label) },
+                                label = { Text(text = label, maxLines = 1) },
                                 modifier = Modifier.testTag(item.testTag)
                             )
                         }
@@ -260,7 +294,9 @@ fun SmartCallResponderApp(
                                 settings = settings,
                                 liveState = liveCallState,
                                 permissions = permissions,
-                                totalCallsCount = callLogs.size,
+                                callLogs = callLogs,
+                                trainedRulesCount = trainedRules.size,
+                                remindersCount = scheduledReminders.size,
                                 onToggleService = { enable ->
                                     if (enable && !permissions.coreGranted) {
                                         pendingEnableAfterPermission = true
@@ -272,6 +308,8 @@ fun SmartCallResponderApp(
                                 onRequestPermissions = {
                                     permissionLauncher.launch(viewModel.requiredPermissionsList())
                                 },
+                                onOpenOverlaySettings = { viewModel.openOverlayPermissionSettings() },
+                                onRequestBatteryExemption = { viewModel.requestBatteryOptimizationExemption() },
                                 onStartLiveTest = { viewModel.startLiveTestSession() },
                                 onStopLiveTest = { viewModel.stopLiveTestSession() },
                                 onSendSimulatedUtterance = { text ->
@@ -288,14 +326,42 @@ fun SmartCallResponderApp(
                             )
                         }
 
+                        composable<TeamMemoryRoute> {
+                            TeamMemoryScreen(
+                                profiles = callerProfiles,
+                                insights = learningInsights,
+                                trainedRules = trainedRules,
+                                scheduledReminders = scheduledReminders,
+                                onSaveProfile = { phone, name, category, notes, deflect ->
+                                    viewModel.saveCallerProfile(phone, name, category, notes, deflect)
+                                },
+                                onDeleteProfile = { phone -> viewModel.deleteCallerProfile(phone) },
+                                onAddManualInsight = { text -> viewModel.addManualInsight(text) },
+                                onDeleteInsight = { id -> viewModel.deleteInsight(id) },
+                                onAddTrainedRule = { kw, reply, cat, strat, end ->
+                                    viewModel.addTrainedQaRule(kw, reply, cat, strat, end)
+                                },
+                                onDeleteTrainedRule = { id -> viewModel.deleteTrainedRule(id) },
+                                onCreatePhoneAction = { type, title, h, m, delay ->
+                                    viewModel.createPhoneAction(type, title, h, m, delay)
+                                },
+                                onDeleteReminder = { id -> viewModel.deleteScheduledReminder(id) }
+                            )
+                        }
+
                         composable<SettingsRoute> {
                             SettingsScreen(
                                 savedSettings = settings,
+                                storageStats = storageStats,
+                                permissions = permissions,
                                 connectionTestState = connectionTestState,
                                 onSaveSettings = { updated -> viewModel.saveSettings(updated) },
                                 onTestConnection = { draft -> viewModel.testAiConnection(draft) },
                                 onResetTestState = { viewModel.resetConnectionTestState() },
-                                onTestTts = { draft -> viewModel.testTtsVoice(draft) }
+                                onTestTts = { draft -> viewModel.testTtsVoice(draft) },
+                                onCleanupNow = { viewModel.runStorageCleanupNow() },
+                                onOpenOverlaySettings = { viewModel.openOverlayPermissionSettings() },
+                                onRequestBatteryExemption = { viewModel.requestBatteryOptimizationExemption() }
                             )
                         }
                     }

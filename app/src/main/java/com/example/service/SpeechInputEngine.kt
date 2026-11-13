@@ -36,6 +36,7 @@ class SpeechInputEngine(private val context: Context) {
 
     suspend fun listenOnce(
         localeTag: String,
+        preferOffline: Boolean = false,
         onPartialResult: (String) -> Unit
     ): SpeechListenResult {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
@@ -133,6 +134,9 @@ class SpeechInputEngine(private val context: Context) {
                         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
                         putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+                        if (preferOffline) {
+                            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                        }
                     }
 
                     try {

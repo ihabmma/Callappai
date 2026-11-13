@@ -4,9 +4,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,16 +21,20 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Alarm
+import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PhoneInTalk
@@ -35,6 +42,7 @@ import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SettingsPhone
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -57,7 +65,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -66,24 +73,33 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
-import com.example.domain.model.AiProviderMode
+import com.example.domain.model.CallLogItem
 import com.example.domain.model.CallResponderStatus
+import com.example.domain.model.CallerCategory
+import com.example.domain.model.ConnectivityPolicy
 import com.example.domain.model.ConversationTurn
 import com.example.domain.model.LiveCallState
 import com.example.domain.model.PermissionSummary
 import com.example.domain.model.ResponderSettings
 import com.example.domain.model.Speaker
 import com.example.ui.components.AudioWaveformCanvas
+import com.example.ui.components.CallerDistributionVisualCard
 import com.example.ui.components.PulsingStatusOrb
+import com.example.ui.components.VisualCallPipelineCard
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DashboardScreen(
     settings: ResponderSettings,
     liveState: LiveCallState,
     permissions: PermissionSummary,
-    totalCallsCount: Int,
+    callLogs: List<CallLogItem>,
+    trainedRulesCount: Int,
+    remindersCount: Int,
     onToggleService: (Boolean) -> Unit,
     onRequestPermissions: () -> Unit,
+    onOpenOverlaySettings: () -> Unit,
+    onRequestBatteryExemption: () -> Unit,
     onStartLiveTest: () -> Unit,
     onStopLiveTest: () -> Unit,
     onSendSimulatedUtterance: (String) -> Unit,
@@ -105,34 +121,45 @@ fun DashboardScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 1. Hero Console Card with One-Tap Master Toggle
             item {
                 HeroControlCard(
-                    isEnabled = settings.isServiceEnabled,
+                    settings = settings,
                     liveState = liveState,
                     onToggleService = onToggleService
                 )
             }
 
-            // 2. Permissions Readiness Checklist
-            if (!permissions.allGranted) {
-                item {
-                    PermissionsCard(
-                        permissions = permissions,
-                        onRequestPermissions = onRequestPermissions
-                    )
-                }
-            }
-
-            // 3. Quick Telemetry Row
             item {
-                QuickTelemetryRow(
-                    totalCallsCount = totalCallsCount,
+                VisualCallPipelineCard(
+                    liveState = liveState,
                     settings = settings
                 )
             }
 
-            // 4. Live Audio Pipeline & Interactive Call Simulator
+            if (!permissions.allGranted || !permissions.ignoringBatteryOptimizations || !permissions.canDrawOverlays) {
+                item {
+                    PermissionsCard(
+                        permissions = permissions,
+                        onRequestPermissions = onRequestPermissions,
+                        onOpenOverlaySettings = onOpenOverlaySettings,
+                        onRequestBatteryExemption = onRequestBatteryExemption
+                    )
+                }
+            }
+
+            item {
+                QuickTelemetryRow(
+                    totalCallsCount = callLogs.size,
+                    trainedRulesCount = trainedRulesCount,
+                    remindersCount = remindersCount,
+                    settings = settings
+                )
+            }
+
+            item {
+                CallerDistributionVisualCard(logs = callLogs)
+            }
+
             item {
                 LivePipelineCard(
                     liveState = liveState,
@@ -141,16 +168,15 @@ fun DashboardScreen(
                     onSimulatedInputChange = { simulatedInput = it },
                     onStartLiveTest = onStartLiveTest,
                     onStopLiveTest = onStopLiveTest,
-                    onSendUtterance = {
-                        if (simulatedInput.isNotBlank()) {
-                            onSendSimulatedUtterance(simulatedInput)
+                    onSendUtterance = { text ->
+                        if (text.isNotBlank()) {
+                            onSendSimulatedUtterance(text)
                             simulatedInput = ""
                         }
                     }
                 )
             }
 
-            // 5. Hardware Call Audio Note
             item {
                 Surface(
                     shape = RoundedCornerShape(16.dp),
@@ -168,7 +194,7 @@ fun DashboardScreen(
                             tint = MaterialTheme.colorScheme.secondary
                         )
                         Text(
-                            text = "عند تلقي مكالمة فعلية، يُفعّل المجيب وضع مكبر الصوت أو مسار الاتصال لنقل صوت الذكاء الاصطناعي بوضوح عبر الميكروفون والسماعة.",
+                            text = "يعمل المجيب بخفية واستهلاك طاقة شبه صفري في الخلفية، ويدعم العمل بدون إنترنت عبر المحرك المحلي المدرب، وضبط المنبهات والتذكيرات، مع تنظيف السجلات تلقائياً كل ${settings.retentionDays} أيام.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -181,10 +207,11 @@ fun DashboardScreen(
 
 @Composable
 private fun HeroControlCard(
-    isEnabled: Boolean,
+    settings: ResponderSettings,
     liveState: LiveCallState,
     onToggleService: (Boolean) -> Unit
 ) {
+    val isEnabled = settings.isServiceEnabled
     val buttonColor by animateColorAsState(
         targetValue = if (isEnabled) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
         label = "powerButtonColor"
@@ -192,11 +219,15 @@ private fun HeroControlCard(
 
     val statusTitle = when (liveState.status) {
         CallResponderStatus.INACTIVE -> "المجيب الآلي متوقف"
-        CallResponderStatus.LISTENING -> "المجيب الآلي نشط ومستعد"
+        CallResponderStatus.LISTENING -> if (settings.stealthZeroDrainMode) {
+            "يعمل بخفية • استهلاك صفري"
+        } else {
+            "فريق المجيب نشط ومستعد"
+        }
         CallResponderStatus.RINGING -> "رنين مكالمة واردة..."
-        CallResponderStatus.ACTIVE_CALL -> "مكالمة جارية — جاري الاستماع"
-        CallResponderStatus.PROCESSING_AI -> "جاري التحليل وتوليد الرد"
-        CallResponderStatus.SPEAKING -> "جاري بث الرد الصوتي"
+        CallResponderStatus.ACTIVE_CALL -> "مكالمة جارية — استماع وفهم"
+        CallResponderStatus.PROCESSING_AI -> "الفريق يحلل المتصل ويصيغ الرد"
+        CallResponderStatus.SPEAKING -> "جاري بث الرد الصوتي الطبيعي"
         CallResponderStatus.ERROR -> "تنبيه في جلسة الرد"
     }
 
@@ -221,8 +252,8 @@ private fun HeroControlCard(
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color(0xCC071116),
-                                Color(0xEE0A1820)
+                                MaterialTheme.colorScheme.scrim.copy(alpha = 0.75f),
+                                MaterialTheme.colorScheme.background.copy(alpha = 0.90f)
                             )
                         )
                     )
@@ -241,14 +272,15 @@ private fun HeroControlCard(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.weight(1f)
                     ) {
                         PulsingStatusOrb(status = liveState.status)
                         Column {
                             Text(
                                 text = statusTitle,
                                 style = MaterialTheme.typography.titleLarge,
-                                color = Color.White,
+                                color = MaterialTheme.colorScheme.onBackground,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
@@ -257,11 +289,32 @@ private fun HeroControlCard(
                                     else "اضغط لتفعيل الرد الذكي على مكالماتك"
                                 },
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = Color(0xFFB7CCD2),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
+                    }
+
+                    val isOfflineMode = settings.connectivityPolicy == ConnectivityPolicy.OFFLINE_ONLY || liveState.isOfflineActive
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isOfflineMode) {
+                            MaterialTheme.colorScheme.tertiaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.primaryContainer
+                        }
+                    ) {
+                        Icon(
+                            imageVector = if (isOfflineMode) Icons.Default.CloudOff else Icons.Default.CloudQueue,
+                            contentDescription = if (isOfflineMode) "وضع أوفلاين" else "وضع هجين أونلاين وأوفلاين",
+                            tint = if (isOfflineMode) {
+                                MaterialTheme.colorScheme.onTertiaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            },
+                            modifier = Modifier.padding(8.dp)
+                        )
                     }
                 }
 
@@ -269,7 +322,7 @@ private fun HeroControlCard(
                     onClick = { onToggleService(!isEnabled) },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = buttonColor,
-                        contentColor = if (isEnabled) Color.White else Color(0xFF00241A)
+                        contentColor = if (isEnabled) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary
                     ),
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
@@ -297,13 +350,13 @@ private fun HeroControlCard(
 @Composable
 private fun PermissionsCard(
     permissions: PermissionSummary,
-    onRequestPermissions: () -> Unit
+    onRequestPermissions: () -> Unit,
+    onOpenOverlaySettings: () -> Unit,
+    onRequestBatteryExemption: () -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
@@ -320,32 +373,92 @@ private fun PermissionsCard(
                     tint = MaterialTheme.colorScheme.tertiary
                 )
                 Text(
-                    text = "صلاحيات التشغيل المطلوبة",
+                    text = "صلاحيات التشغيل والعمل في الخلفية",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
             }
 
-            PermissionRow("حالة الهاتف والمكالمات (READ_PHONE_STATE)", permissions.readPhoneState)
-            PermissionRow("التقاط الصوت والميكروفون (RECORD_AUDIO)", permissions.recordAudio)
-            PermissionRow("الرد التلقائي على الرنين (ANSWER_PHONE_CALLS)", permissions.answerPhoneCalls)
-            PermissionRow("قراءة رقم المتصل (READ_CALL_LOG)", permissions.readCallLog)
-            PermissionRow("إشعار الخدمة المستمرة (POST_NOTIFICATIONS)", permissions.postNotifications)
+            if (!permissions.allGranted) {
+                PermissionRow("حالة الهاتف والمكالمات (READ_PHONE_STATE)", permissions.readPhoneState)
+                PermissionRow("التقاط الصوت والميكروفون (RECORD_AUDIO)", permissions.recordAudio)
+                PermissionRow("الرد والإغلاق التلقائي (ANSWER_PHONE_CALLS)", permissions.answerPhoneCalls)
+                PermissionRow("قراءة رقم المتصل (READ_CALL_LOG)", permissions.readCallLog)
+                PermissionRow("تمييز الأصدقاء والعملاء (READ_CONTACTS)", permissions.readContacts)
+                PermissionRow("إشعار الخدمة المستمرة (POST_NOTIFICATIONS)", permissions.postNotifications)
 
-            FilledTonalButton(
-                onClick = onRequestPermissions,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("request_permissions_button")
+                FilledTonalButton(
+                    onClick = onRequestPermissions,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("request_permissions_button")
+                ) {
+                    Icon(imageVector = Icons.Default.Security, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "منح الصلاحيات الأساسية",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(imageVector = Icons.Default.Security, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "منح الصلاحيات المطلوبة",
-                    style = MaterialTheme.typography.labelLarge
-                )
+                OutlinedButton(
+                    onClick = onRequestBatteryExemption,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("battery_exemption_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.BatteryChargingFull,
+                        contentDescription = null,
+                        tint = if (permissions.ignoringBatteryOptimizations) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.tertiary
+                        },
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (permissions.ignoringBatteryOptimizations) "البطارية: مستثنى" else "استثناء البطارية",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onOpenOverlaySettings,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("overlay_permission_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Layers,
+                        contentDescription = null,
+                        tint = if (permissions.canDrawOverlays) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.tertiary
+                        },
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (permissions.canDrawOverlays) "فوق التطبيقات: نشط" else "فوق التطبيقات",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }
@@ -379,6 +492,8 @@ private fun PermissionRow(label: String, granted: Boolean) {
 @Composable
 private fun QuickTelemetryRow(
     totalCallsCount: Int,
+    trainedRulesCount: Int,
+    remindersCount: Int,
     settings: ResponderSettings
 ) {
     Row(
@@ -387,20 +502,26 @@ private fun QuickTelemetryRow(
     ) {
         TelemetryMiniCard(
             icon = Icons.Default.PhoneInTalk,
-            label = "المكالمات المسجلة",
+            label = "المكالمات",
             value = "$totalCallsCount",
             modifier = Modifier.weight(1f)
         )
         TelemetryMiniCard(
-            icon = Icons.Default.AutoAwesome,
-            label = "محرك الذكاء",
-            value = if (settings.aiProviderMode == AiProviderMode.FIREBASE_AI_LOGIC) "Firebase AI" else "AI Studio",
+            icon = Icons.Default.CloudOff,
+            label = "تدريب أوفلاين",
+            value = "$trainedRulesCount قاعدة",
+            modifier = Modifier.weight(1f)
+        )
+        TelemetryMiniCard(
+            icon = Icons.Default.Alarm,
+            label = "منبهات وتذكير",
+            value = "$remindersCount",
             modifier = Modifier.weight(1f)
         )
         TelemetryMiniCard(
             icon = Icons.Default.NotificationsActive,
             label = "الرد التلقائي",
-            value = if (settings.autoAnswerEnabled) "بعد ${settings.autoAnswerDelaySeconds}ث" else "يدوي",
+            value = if (settings.autoAnswerEnabled) "${settings.autoAnswerDelaySeconds}ث" else "يدوي",
             modifier = Modifier.weight(1f)
         )
     }
@@ -419,18 +540,18 @@ private fun TelemetryMiniCard(
         modifier = modifier
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = label,
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(18.dp)
             )
             Text(
                 text = value,
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -446,6 +567,7 @@ private fun TelemetryMiniCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LivePipelineCard(
     liveState: LiveCallState,
@@ -454,7 +576,7 @@ private fun LivePipelineCard(
     onSimulatedInputChange: (String) -> Unit,
     onStartLiveTest: () -> Unit,
     onStopLiveTest: () -> Unit,
-    onSendUtterance: () -> Unit
+    onSendUtterance: (String) -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(22.dp),
@@ -472,7 +594,8 @@ private fun LivePipelineCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     Icon(
                         imageVector = Icons.Default.GraphicEq,
@@ -481,13 +604,17 @@ private fun LivePipelineCard(
                     )
                     Column {
                         Text(
-                            text = "مراقب الصوت والرد المباشر",
+                            text = "مراقب الصوت وفريق الرد المباشر",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
-                        if (liveState.callerNumber.isNotBlank() && isSessionActive) {
+                        if (isSessionActive) {
+                            val title = buildString {
+                                if (liveState.callerName.isNotBlank()) append("${liveState.callerName} • ")
+                                append(liveState.callerNumber)
+                            }
                             Text(
-                                text = liveState.callerNumber,
+                                text = title,
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.secondary
                             )
@@ -521,7 +648,48 @@ private fun LivePipelineCard(
                     ) {
                         Icon(Icons.Default.Mic, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("اختبار صوتي مباشر")
+                        Text("اختبار صوتي")
+                    }
+                }
+            }
+
+            AnimatedVisibility(visible = isSessionActive || liveState.detectedCategory != CallerCategory.UNKNOWN) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        Text(
+                            text = "المتصل: ${liveState.detectedCategory.arabicLabel}",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer
+                    ) {
+                        Text(
+                            text = "الأسلوب: ${liveState.activeStrategy.arabicLabel}",
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                    if (liveState.isOfflineActive) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.tertiaryContainer
+                        ) {
+                            Text(
+                                text = "استجابة أوفلاين",
+                                style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -565,11 +733,11 @@ private fun LivePipelineCard(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 8.dp),
+                        .padding(vertical = 4.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "اضغط على «اختبار صوتي مباشر» أو اكتب رسالة متصل أدناه لتجربة محرك Gemini + TTS فوراً.",
+                        text = "جرّب السيناريوهات السريعة لاختبار التمييز، المراوغة، الوضع الأوفلاين، وضبط المنبهات:",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -579,6 +747,26 @@ private fun LivePipelineCard(
                     liveState.turns.takeLast(6).forEach { turn ->
                         LiveTranscriptBubble(turn = turn)
                     }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(
+                    "عميل يطلب عرض سعر" to "السلام عليكم، أنا عميل جديد وأريد الاستفسار عن أسعار خدماتكم وموعد التسليم.",
+                    "صديق مقرب" to "أهلاً يا صديقي، أنا خالد، حبيت أطمن عليك وأشوفك فاضي بالمساء؟",
+                    "مندوب تسويق (مراوغة)" to "مرحباً معك شركة عروض التمويل، عندنا عرض بطاقة ائتمان ممتاز لازم تاخذه اليوم!",
+                    "تذكير وموعد" to "ذكرني بعد 15 دقيقة أتصل بخصوص العقد واضبط منبه الساعة 7 مساء.",
+                    "إنهاء ووداع" to "تمام شكراً جزيلاً لك، يعطيك العافية، مع السلامة."
+                ).forEach { (label, prompt) ->
+                    AssistChip(
+                        onClick = { onSendUtterance(prompt) },
+                        label = { Text(label) }
+                    )
                 }
             }
 
@@ -598,7 +786,7 @@ private fun LivePipelineCard(
                         .testTag("simulated_caller_input")
                 )
                 IconButton(
-                    onClick = onSendUtterance,
+                    onClick = { onSendUtterance(simulatedInput) },
                     enabled = simulatedInput.isNotBlank(),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = MaterialTheme.colorScheme.primary,

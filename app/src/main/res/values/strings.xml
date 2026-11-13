@@ -1,7 +1,8 @@
 <resources>
     <string name="app_name">المجيب الذكي</string>
     <string name="nav_dashboard">لوحة التحكم</string>
-    <string name="nav_history">سجل المكالمات</string>
+    <string name="nav_history">السجل</string>
+    <string name="nav_team">الفريق والذاكرة</string>
     <string name="nav_settings">الإعدادات</string>
 
     <string name="status_active">المجيب الآلي نشط</string>
@@ -11,6 +12,8 @@
 
     <string name="notification_channel_name">خدمة المجيب الآلي الذكي</string>
     <string name="notification_channel_desc">إشعار دائم لمراقبة المكالمات الواردة وتشغيل الرد الذكي</string>
+    <string name="reminder_channel_name">التذكيرات والمنبهات الذكية</string>
+    <string name="reminder_channel_desc">إشعارات المنبهات والمؤقتات والتذكيرات المنشأة عبر المجيب الذكي</string>
     <string name="notification_action_stop">إيقاف الخدمة</string>
     <string name="notification_action_open">فتح التطبيق</string>
 

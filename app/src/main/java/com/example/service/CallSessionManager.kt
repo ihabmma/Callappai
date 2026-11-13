@@ -2,15 +2,22 @@ package com.example.service
 
 import android.util.Log
 import com.example.data.local.SettingsDataStore
+import com.example.data.local.StorageRetentionManager
 import com.example.data.repository.AiResponderRepository
 import com.example.data.repository.CallLogRepository
+import com.example.data.repository.CallerContextInfo
 import com.example.domain.model.CallLogItem
 import com.example.domain.model.CallOutcome
 import com.example.domain.model.CallResponderStatus
+import com.example.domain.model.CallerCategory
+import com.example.domain.model.CallerProfile
+import com.example.domain.model.ConnectivityPolicy
 import com.example.domain.model.ConversationTurn
+import com.example.domain.model.HandlingStrategy
 import com.example.domain.model.LiveCallState
 import com.example.domain.model.ResponderSettings
 import com.example.domain.model.Speaker
+import com.example.domain.model.StructuredAiReply
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -26,16 +33,22 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 
 /**
- * Coordinates the live call pipeline:
- * AudioCaptureEngine -> SpeechInputEngine -> AiResponderRepository -> TtsAudioEngine -> CallLogRepository.
+ * Coordinates the complete AI Call Team pipeline:
+ * CallerIdentifier -> AudioCaptureEngine -> SpeechInputEngine -> AiResponderRepository (Online/Offline) ->
+ * PhoneActionExecutor (Alarms/Timers/Reminders) -> TtsAudioEngine -> CallOverlayManager ->
+ * Auto-Hangup & Self-Learning Profile Update -> StorageRetentionManager.
  */
 class CallSessionManager(
     private val settingsDataStore: SettingsDataStore,
     private val aiResponderRepository: AiResponderRepository,
     private val callLogRepository: CallLogRepository,
+    private val storageRetentionManager: StorageRetentionManager,
+    private val callerIdentifier: CallerIdentifier,
     private val audioCaptureEngine: AudioCaptureEngine,
     private val ttsAudioEngine: TtsAudioEngine,
-    private val speechInputEngine: SpeechInputEngine
+    private val speechInputEngine: SpeechInputEngine,
+    private val phoneActionExecutor: PhoneActionExecutor? = null,
+    private val callOverlayManager: CallOverlayManager? = null
 ) {
     companion object {
         private const val TAG = "CallSessionManager"
@@ -49,6 +62,10 @@ class CallSessionManager(
     private var sessionJob: Job? = null
     private var amplitudeCollectorJob: Job? = null
     private var sessionStartTimeMillis: Long = 0L
+    private var activeCallerContext: CallerContextInfo = CallerContextInfo(phoneNumber = "")
+    private var endedByAiFlag: Boolean = false
+    private var usedOfflineEngineFlag: Boolean = false
+    private var hangupCallback: (() -> Unit)? = null
 
     init {
         amplitudeCollectorJob = scope.launch {
@@ -64,6 +81,13 @@ class CallSessionManager(
                 }
             }
         }
+        scope.launch {
+            storageRetentionManager.enforceRetentionPolicy()
+        }
+    }
+
+    fun registerHangupHandler(handler: (() -> Unit)?) {
+        hangupCallback = handler
     }
 
     fun onServiceStateChanged(enabled: Boolean) {
@@ -71,7 +95,7 @@ class CallSessionManager(
         _liveState.update {
             it.copy(
                 status = if (enabled) CallResponderStatus.LISTENING else CallResponderStatus.INACTIVE,
-                statusNote = if (enabled) "في انتظار المكالمات الواردة" else "المجيب الآلي متوقف",
+                statusNote = if (enabled) "الفريق الذكي في انتظار المكالمات الواردة" else "المجيب الآلي متوقف",
                 errorMessage = null,
                 audioAmplitude = 0f
             )
@@ -80,31 +104,44 @@ class CallSessionManager(
 
     fun onIncomingCallRinging(callerNumber: String) {
         if (sessionJob?.isActive == true) return
-        _liveState.update {
-            it.copy(
-                status = CallResponderStatus.RINGING,
-                callerNumber = callerNumber.ifBlank { "رقم غير معروف" },
-                isTestSession = false,
-                statusNote = "مكالمة واردة — جاري التحضير للرد التلقائي...",
-                errorMessage = null
-            )
+        scope.launch {
+            val identified = callerIdentifier.identifyCaller(callerNumber)
+            _liveState.update {
+                it.copy(
+                    status = CallResponderStatus.RINGING,
+                    callerNumber = callerNumber.ifBlank { "رقم غير معروف" },
+                    callerName = identified.resolvedName,
+                    detectedCategory = identified.savedProfile?.category ?: CallerCategory.UNKNOWN,
+                    isTestSession = false,
+                    statusNote = if (identified.resolvedName.isNotBlank()) {
+                        "مكالمة واردة من ${identified.resolvedName}"
+                    } else {
+                        "مكالمة واردة — جاري التحضير للرد التلقائي..."
+                    },
+                    errorMessage = null
+                )
+            }
         }
     }
 
     fun onIncomingCallMissed(callerNumber: String) {
         if (sessionJob?.isActive == true) return
         scope.launch {
+            val identified = callerIdentifier.identifyCaller(callerNumber)
             callLogRepository.saveCallLog(
                 CallLogItem(
                     callerNumber = callerNumber.ifBlank { "رقم غير معروف" },
+                    callerName = identified.resolvedName,
+                    callerCategory = identified.savedProfile?.category ?: CallerCategory.UNKNOWN,
                     startedAtMillis = System.currentTimeMillis(),
                     durationSeconds = 0,
                     outcome = CallOutcome.MISSED,
-                    summary = "مكالمة لم يُرد عليها قبل بدء الرد الآلي.",
+                    summary = "مكالمة لم يُرد عليها قبل انتهاء الرنين.",
                     turns = emptyList(),
                     isTestSession = false
                 )
             )
+            storageRetentionManager.enforceRetentionPolicy()
             val enabled = settingsDataStore.getCurrentSettings().isServiceEnabled
             onServiceStateChanged(enabled)
         }
@@ -121,46 +158,69 @@ class CallSessionManager(
         }
 
         sessionStartTimeMillis = System.currentTimeMillis()
+        endedByAiFlag = false
+        usedOfflineEngineFlag = false
+
+        val initialLabel = callerNumber.ifBlank {
+            if (isTestSession) "جلسة اختبار مباشر" else "رقم غير معروف"
+        }
+
         _liveState.value = LiveCallState(
             status = CallResponderStatus.ACTIVE_CALL,
-            callerNumber = callerNumber.ifBlank { if (isTestSession) "جلسة اختبار مباشر" else "رقم غير معروف" },
+            callerNumber = initialLabel,
             isTestSession = isTestSession,
-            statusNote = "تم فتح الخط — جاري نطق رسالة الترحيب...",
+            statusNote = "تم فتح الخط — جاري التعرف على المتصل ونطق الترحيب...",
             turns = emptyList()
         )
 
         sessionJob = scope.launch {
             val settings = settingsDataStore.getCurrentSettings()
+            val offlineDefault = settings.connectivityPolicy == ConnectivityPolicy.OFFLINE_ONLY
+            usedOfflineEngineFlag = offlineDefault
             try {
+                activeCallerContext = callerIdentifier.identifyCaller(initialLabel)
+                val initialCategory = activeCallerContext.savedProfile?.category ?: CallerCategory.UNKNOWN
+
+                _liveState.update {
+                    it.copy(
+                        callerName = activeCallerContext.resolvedName,
+                        detectedCategory = initialCategory,
+                        isOfflineActive = offlineDefault
+                    )
+                }
+
+                syncOverlayIfEnabled(settings)
+
                 audioCaptureEngine.configureCallAudioRouting(
                     useSpeakerphone = if (isTestSession) true else settings.useSpeakerphoneForReply
                 )
                 audioCaptureEngine.startLevelMonitoring(this)
 
-                // 1. Greet the caller via TTS
+                val personalizedGreeting = buildPersonalizedGreeting(settings, activeCallerContext)
                 val greetingTurn = ConversationTurn(
                     id = UUID.randomUUID().toString(),
                     speaker = Speaker.ASSISTANT,
-                    text = settings.greetingMessage
+                    text = personalizedGreeting
                 )
                 appendTurn(greetingTurn)
                 updateStatus(
                     CallResponderStatus.SPEAKING,
-                    "المجيب يتحدث: رسالة الترحيب..."
+                    "المتحدث الطبيعي يرحب بالمتصل...",
+                    settings
                 )
                 ttsAudioEngine.speakAndAwait(
-                    text = settings.greetingMessage,
+                    text = personalizedGreeting,
                     speechRate = settings.ttsSpeechRate,
                     pitch = settings.ttsPitch
                 )
 
-                // 2. Continuous voice listening loop
                 if (enableContinuousMicLoop) {
                     runVoiceConversationLoop(settings)
                 } else {
                     updateStatus(
                         CallResponderStatus.ACTIVE_CALL,
-                        "الجلسة جاهزة — يمكنك التحدث أو إرسال نص تجريبي."
+                        "الجلسة جاهزة — تحدث أو أرسل جملة تجريبية أدناه.",
+                        settings
                     )
                 }
             } catch (e: CancellationException) {
@@ -173,24 +233,44 @@ class CallSessionManager(
                         errorMessage = e.localizedMessage ?: "حدث خطأ غير متوقع أثناء المكالمة."
                     )
                 }
+                syncOverlayIfEnabled(settings)
             }
+        }
+    }
+
+    private fun buildPersonalizedGreeting(
+        settings: ResponderSettings,
+        contextInfo: CallerContextInfo
+    ): String {
+        val name = contextInfo.resolvedName
+        val isDeflect = contextInfo.savedProfile?.isDeflectMode == true ||
+            contextInfo.savedProfile?.category == CallerCategory.SPAM_SALES
+        return when {
+            isDeflect -> "مرحباً، صاحب الهاتف غير متاح حالياً لاستقبال المكالمات. هل هناك أمر ضروري؟"
+            name.isNotBlank() && contextInfo.savedProfile?.category == CallerCategory.FRIEND ->
+                "أهلاً $name، منور! صاحب الهاتف مشغول حالياً قليلاً، أخبرني إذا تحب أبلغه بشيء."
+            name.isNotBlank() -> "أهلاً بك يا $name. ${settings.greetingMessage}"
+            else -> settings.greetingMessage
         }
     }
 
     private suspend fun CoroutineScope.runVoiceConversationLoop(settings: ResponderSettings) {
         var silentCycles = 0
+        val preferOfflineSpeech = settings.connectivityPolicy == ConnectivityPolicy.OFFLINE_ONLY
         while (isActive) {
             _liveState.update {
                 it.copy(
                     status = CallResponderStatus.ACTIVE_CALL,
                     isListeningForSpeech = true,
                     partialCallerSpeech = "",
-                    statusNote = "جاري الاستماع لصوت المتصل..."
+                    statusNote = "جاري الاستماع وفهم المتصل..."
                 )
             }
+            syncOverlayIfEnabled(settings)
 
             val listenResult = speechInputEngine.listenOnce(
                 localeTag = settings.recognitionLocale,
+                preferOffline = preferOfflineSpeech,
                 onPartialResult = { partial ->
                     _liveState.update { it.copy(partialCallerSpeech = partial) }
                 }
@@ -201,17 +281,26 @@ class CallSessionManager(
             when (listenResult) {
                 is SpeechListenResult.Recognized -> {
                     silentCycles = 0
-                    handleCallerMessageInternal(listenResult.text, settings)
+                    val shouldTerminate = handleCallerMessageInternal(listenResult.text, settings)
+                    if (shouldTerminate) break
                 }
                 is SpeechListenResult.NoSpeech -> {
                     silentCycles++
                     if (!isActive) break
                     delay(350L)
-                    if (silentCycles >= 6) {
-                        updateStatus(
-                            CallResponderStatus.ACTIVE_CALL,
-                            "بانتظار حديث المتصل (يمكنك التحدث أو الكتابة أدناه)..."
+                    if (silentCycles >= 4 && settings.autoHangupEnabled) {
+                        val closing = "يبدو أن الخط هادئ، سأنهي المكالمة الآن ونتواصل معك لاحقاً. مع السلامة."
+                        appendTurn(
+                            ConversationTurn(
+                                id = UUID.randomUUID().toString(),
+                                speaker = Speaker.ASSISTANT,
+                                text = closing
+                            )
                         )
+                        ttsAudioEngine.speakAndAwait(closing, settings.ttsSpeechRate, settings.ttsPitch)
+                        endedByAiFlag = true
+                        triggerHangupOrEnd()
+                        break
                     }
                 }
                 is SpeechListenResult.Unavailable -> {
@@ -219,12 +308,13 @@ class CallSessionManager(
                         ConversationTurn(
                             id = UUID.randomUUID().toString(),
                             speaker = Speaker.SYSTEM,
-                            text = "${listenResult.reason} يمكنك متابعة الاختبار عبر الإدخال النصي."
+                            text = "${listenResult.reason} يمكنك متابعة الاختبار عبر الإدخال النصي أو القوالب السريعة."
                         )
                     )
                     updateStatus(
                         CallResponderStatus.ACTIVE_CALL,
-                        "التعرف الصوتي غير متاح هنا — استخدم الإدخال النصي أو أعد المحاولة."
+                        "التعرف الصوتي غير متاح هنا — استخدم الإدخال النصي أدناه.",
+                        settings
                     )
                     break
                 }
@@ -232,30 +322,31 @@ class CallSessionManager(
         }
     }
 
-    /**
-     * Allows injecting a caller utterance manually (useful during live testing or emulator testing).
-     */
     fun submitCallerTextTurn(text: String) {
         val clean = text.trim()
         if (clean.isEmpty()) return
-        if (sessionJob?.isActive != true) {
-            startActiveSession(
-                callerNumber = "جلسة اختبار مباشر",
-                isTestSession = true,
-                enableContinuousMicLoop = false
-            )
-        }
         scope.launch {
+            if (sessionJob?.isActive != true) {
+                startActiveSession(
+                    callerNumber = "جلسة اختبار مباشر",
+                    isTestSession = true,
+                    enableContinuousMicLoop = false
+                )
+                delay(250L)
+            }
             val settings = settingsDataStore.getCurrentSettings()
             speechInputEngine.cancelListening()
             handleCallerMessageInternal(clean, settings)
         }
     }
 
+    /**
+     * Returns true if the AI decided the call should now end automatically.
+     */
     private suspend fun handleCallerMessageInternal(
         callerText: String,
         settings: ResponderSettings
-    ) {
+    ): Boolean {
         val callerTurn = ConversationTurn(
             id = UUID.randomUUID().toString(),
             speaker = Speaker.CALLER,
@@ -265,52 +356,131 @@ class CallSessionManager(
 
         updateStatus(
             CallResponderStatus.PROCESSING_AI,
-            "جاري توليد رد ذكي عبر Gemini..."
+            "فريق الذكاء الاصطناعي يحلل المتصل ويصيغ الرد...",
+            settings
         )
 
         val historyBeforeLatest = _liveState.value.turns.dropLast(1)
-        val replyResult = aiResponderRepository.generateReply(
+        val result = aiResponderRepository.generateStructuredReply(
             callerInput = callerText,
             history = historyBeforeLatest,
-            settings = settings
+            settings = settings,
+            callerContext = activeCallerContext
         )
 
-        val replyText = replyResult.getOrElse { error ->
+        val callerTurnsCount = _liveState.value.turns.count { it.speaker == Speaker.CALLER }
+        val reachedTurnLimit = callerTurnsCount >= settings.maxTurnsPerCall
+
+        val reply = result.getOrElse { error ->
             Log.e(TAG, "AI reply failed, using fallback", error)
             _liveState.update {
                 it.copy(errorMessage = error.localizedMessage ?: "تعذر الاتصال بمحرك الذكاء الاصطناعي.")
             }
-            settings.fallbackMessage
+            StructuredAiReply(
+                replyText = settings.fallbackMessage,
+                detectedCategory = activeCallerContext.savedProfile?.category ?: CallerCategory.UNKNOWN,
+                strategy = HandlingStrategy.PROFESSIONAL_CLIENT,
+                shouldEndCall = false
+            )
+        }
+
+        if (reply.isOfflineResponse) {
+            usedOfflineEngineFlag = true
+        }
+
+        _liveState.update {
+            it.copy(
+                detectedCategory = reply.detectedCategory,
+                activeStrategy = reply.strategy,
+                isOfflineActive = reply.isOfflineResponse
+            )
+        }
+
+        // Execute requested phone action (alarm / timer / reminder) if permitted
+        val actionPayload = reply.phoneAction
+        if (settings.allowCallerReminders &&
+            actionPayload != null &&
+            phoneActionExecutor != null
+        ) {
+            val callerSource = activeCallerContext.resolvedName.ifBlank {
+                activeCallerContext.phoneNumber
+            }
+            val actionOutcome = phoneActionExecutor.execute(actionPayload, callerSource)
+            if (actionOutcome.executed && actionOutcome.arabicSummary.isNotBlank()) {
+                appendTurn(
+                    ConversationTurn(
+                        id = UUID.randomUUID().toString(),
+                        speaker = Speaker.SYSTEM,
+                        text = actionOutcome.arabicSummary
+                    )
+                )
+            }
+        }
+
+        if (settings.enableSelfLearning && reply.selfLearningTip.isNotBlank()) {
+            callLogRepository.addLearningInsight(
+                callerNumber = activeCallerContext.phoneNumber,
+                insightText = reply.selfLearningTip
+            )
         }
 
         val assistantTurn = ConversationTurn(
             id = UUID.randomUUID().toString(),
             speaker = Speaker.ASSISTANT,
-            text = replyText
+            text = reply.replyText
         )
         appendTurn(assistantTurn)
 
+        val modeLabel = if (reply.isOfflineResponse) "أوفلاين" else "أونلاين"
         updateStatus(
             CallResponderStatus.SPEAKING,
-            "بث الرد الصوتي إلى سماعة المكالمة..."
+            "${reply.strategy.arabicLabel} ($modeLabel) — جاري النطق...",
+            settings
         )
         ttsAudioEngine.speakAndAwait(
-            text = replyText,
+            text = reply.replyText,
             speechRate = settings.ttsSpeechRate,
             pitch = settings.ttsPitch
         )
 
+        val shouldHangup = settings.autoHangupEnabled && (reply.shouldEndCall || reachedTurnLimit)
+        if (shouldHangup) {
+            endedByAiFlag = true
+            appendTurn(
+                ConversationTurn(
+                    id = UUID.randomUUID().toString(),
+                    speaker = Speaker.SYSTEM,
+                    text = "تم إنهاء المكالمة تلقائياً بعد إتمام الحوار (${reply.strategy.arabicLabel})."
+                )
+            )
+            triggerHangupOrEnd()
+            return true
+        }
+
         updateStatus(
             CallResponderStatus.ACTIVE_CALL,
-            "جاهز لمداخلة المتصل التالية..."
+            "التصنيف: ${reply.detectedCategory.arabicLabel} • $modeLabel • جاهز للرد التالي...",
+            settings
         )
+        return false
+    }
+
+    private fun triggerHangupOrEnd() {
+        val isRealCall = !_liveState.value.isTestSession
+        if (isRealCall && hangupCallback != null) {
+            hangupCallback?.invoke()
+        }
+        endActiveSession()
     }
 
     fun endActiveSession() {
         val wasRunning = sessionJob != null ||
             (_liveState.value.status != CallResponderStatus.INACTIVE &&
                 _liveState.value.status != CallResponderStatus.LISTENING)
-        if (!wasRunning) return
+        if (!wasRunning) {
+            callOverlayManager?.dismiss()
+            return
+        }
 
         val snapshot = _liveState.value
         val startedAt = if (sessionStartTimeMillis > 0L) sessionStartTimeMillis else System.currentTimeMillis()
@@ -318,6 +488,7 @@ class CallSessionManager(
 
         sessionJob?.cancel()
         sessionJob = null
+        callOverlayManager?.dismiss()
 
         scope.launch {
             try {
@@ -336,20 +507,54 @@ class CallSessionManager(
                     snapshot.errorMessage != null && snapshot.turns.none { it.speaker == Speaker.ASSISTANT } -> CallOutcome.ERROR
                     else -> CallOutcome.COMPLETED
                 }
+
                 callLogRepository.saveCallLog(
                     CallLogItem(
                         callerNumber = snapshot.callerNumber.ifBlank { "غير معروف" },
+                        callerName = snapshot.callerName,
+                        callerCategory = snapshot.detectedCategory,
+                        strategyUsed = snapshot.activeStrategy,
                         startedAtMillis = startedAt,
                         durationSeconds = durationSec,
                         outcome = outcome,
                         summary = summary,
                         turns = snapshot.turns,
-                        isTestSession = snapshot.isTestSession
+                        isTestSession = snapshot.isTestSession,
+                        endedByAi = endedByAiFlag,
+                        handledOffline = usedOfflineEngineFlag || snapshot.isOfflineActive
                     )
                 )
+
+                // Self-learning: update caller profile for real calls so AI recognizes them next time
+                if (!snapshot.isTestSession &&
+                    snapshot.callerNumber.isNotBlank() &&
+                    snapshot.callerNumber != "رقم غير معروف"
+                ) {
+                    val existing = callLogRepository.getCallerProfile(snapshot.callerNumber)
+                    val updatedProfile = CallerProfile(
+                        phoneNumber = snapshot.callerNumber,
+                        displayName = snapshot.callerName.ifBlank { existing?.displayName.orEmpty() },
+                        category = if (snapshot.detectedCategory != CallerCategory.UNKNOWN) {
+                            snapshot.detectedCategory
+                        } else {
+                            existing?.category ?: CallerCategory.UNKNOWN
+                        },
+                        notes = summary.take(180),
+                        callCount = (existing?.callCount ?: 0) + 1,
+                        lastCallMillis = System.currentTimeMillis(),
+                        isDeflectMode = existing?.isDeflectMode
+                            ?: (snapshot.detectedCategory == CallerCategory.SPAM_SALES)
+                    )
+                    callLogRepository.upsertCallerProfile(updatedProfile)
+                }
+
+                // Auto-enforce storage retention policy (e.g., delete > 3 days or excess space)
+                storageRetentionManager.enforceRetentionPolicy()
             }
 
             sessionStartTimeMillis = 0L
+            endedByAiFlag = false
+            usedOfflineEngineFlag = false
             onServiceStateChanged(settings.isServiceEnabled)
         }
     }
@@ -360,9 +565,25 @@ class CallSessionManager(
         }
     }
 
-    private fun updateStatus(status: CallResponderStatus, note: String) {
+    private fun updateStatus(
+        status: CallResponderStatus,
+        note: String,
+        settings: ResponderSettings? = null
+    ) {
         _liveState.update { current ->
             current.copy(status = status, statusNote = note)
         }
+        if (settings != null) {
+            syncOverlayIfEnabled(settings)
+        }
+    }
+
+    private fun syncOverlayIfEnabled(settings: ResponderSettings) {
+        val manager = callOverlayManager ?: return
+        if (!settings.floatingOverlayEnabled || !manager.canDrawOverlays()) return
+        manager.showOrUpdate(
+            state = _liveState.value,
+            onHangupClick = { triggerHangupOrEnd() }
+        )
     }
 }

@@ -4,6 +4,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,12 +20,17 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.PhoneCallback
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
@@ -50,27 +57,38 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.domain.model.AiProviderMode
+import com.example.domain.model.ConnectivityPolicy
+import com.example.domain.model.PermissionSummary
 import com.example.domain.model.ResponderSettings
+import com.example.domain.model.StorageStats
 import com.example.ui.viewmodel.ConnectionTestState
 import kotlin.math.roundToInt
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     savedSettings: ResponderSettings,
+    storageStats: StorageStats,
+    permissions: PermissionSummary,
     connectionTestState: ConnectionTestState,
     onSaveSettings: (ResponderSettings) -> Unit,
     onTestConnection: (ResponderSettings) -> Unit,
     onResetTestState: () -> Unit,
     onTestTts: (ResponderSettings) -> Unit,
+    onCleanupNow: () -> Unit,
+    onOpenOverlaySettings: () -> Unit,
+    onRequestBatteryExemption: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var aiMode by remember(savedSettings) { mutableStateOf(savedSettings.aiProviderMode) }
+    var connectivityPolicy by remember(savedSettings) { mutableStateOf(savedSettings.connectivityPolicy) }
     var customApiKey by remember(savedSettings) { mutableStateOf(savedSettings.customApiKey) }
     var showApiKey by remember { mutableStateOf(false) }
     var customModelName by remember(savedSettings) { mutableStateOf(savedSettings.customModelName) }
@@ -81,17 +99,29 @@ fun SettingsScreen(
 
     var autoAnswerEnabled by remember(savedSettings) { mutableStateOf(savedSettings.autoAnswerEnabled) }
     var autoAnswerDelay by remember(savedSettings) { mutableIntStateOf(savedSettings.autoAnswerDelaySeconds) }
+    var autoHangupEnabled by remember(savedSettings) { mutableStateOf(savedSettings.autoHangupEnabled) }
+    var maxTurnsPerCall by remember(savedSettings) { mutableIntStateOf(savedSettings.maxTurnsPerCall) }
     var useSpeakerphone by remember(savedSettings) { mutableStateOf(savedSettings.useSpeakerphoneForReply) }
     var speechRate by remember(savedSettings) { mutableFloatStateOf(savedSettings.ttsSpeechRate) }
     var ttsPitch by remember(savedSettings) { mutableFloatStateOf(savedSettings.ttsPitch) }
     var recognitionLocale by remember(savedSettings) { mutableStateOf(savedSettings.recognitionLocale) }
 
-    LaunchedEffect(aiMode, customApiKey, customModelName) {
+    var enableSelfLearning by remember(savedSettings) { mutableStateOf(savedSettings.enableSelfLearning) }
+    var enableDiplomaticDeflection by remember(savedSettings) { mutableStateOf(savedSettings.enableDiplomaticDeflection) }
+    var stealthZeroDrainMode by remember(savedSettings) { mutableStateOf(savedSettings.stealthZeroDrainMode) }
+    var floatingOverlayEnabled by remember(savedSettings) { mutableStateOf(savedSettings.floatingOverlayEnabled) }
+    var autoTrainOffline by remember(savedSettings) { mutableStateOf(savedSettings.autoTrainOfflineFromOnline) }
+    var allowCallerReminders by remember(savedSettings) { mutableStateOf(savedSettings.allowCallerReminders) }
+    var retentionDays by remember(savedSettings) { mutableIntStateOf(savedSettings.retentionDays) }
+    var maxStoredCalls by remember(savedSettings) { mutableIntStateOf(savedSettings.maxStoredCalls) }
+
+    LaunchedEffect(aiMode, connectivityPolicy, customApiKey, customModelName) {
         onResetTestState()
     }
 
     fun buildDraft(): ResponderSettings = savedSettings.copy(
         aiProviderMode = aiMode,
+        connectivityPolicy = connectivityPolicy,
         customApiKey = customApiKey.trim(),
         customModelName = customModelName.trim(),
         greetingMessage = greetingMessage.trim(),
@@ -99,10 +129,20 @@ fun SettingsScreen(
         fallbackMessage = fallbackMessage.trim(),
         autoAnswerEnabled = autoAnswerEnabled,
         autoAnswerDelaySeconds = autoAnswerDelay,
+        autoHangupEnabled = autoHangupEnabled,
+        maxTurnsPerCall = maxTurnsPerCall,
         useSpeakerphoneForReply = useSpeakerphone,
         ttsSpeechRate = speechRate,
         ttsPitch = ttsPitch,
-        recognitionLocale = recognitionLocale
+        recognitionLocale = recognitionLocale,
+        enableSelfLearning = enableSelfLearning,
+        enableDiplomaticDeflection = enableDiplomaticDeflection,
+        stealthZeroDrainMode = stealthZeroDrainMode,
+        floatingOverlayEnabled = floatingOverlayEnabled,
+        autoTrainOfflineFromOnline = autoTrainOffline,
+        allowCallerReminders = allowCallerReminders,
+        retentionDays = retentionDays,
+        maxStoredCalls = maxStoredCalls
     )
 
     Box(
@@ -124,18 +164,109 @@ fun SettingsScreen(
                 )
             }
 
-            // Section 1: AI Engine & Google AI Studio Key
+            // Section 1: Connectivity & Offline Policy
+            item {
+                SettingsSectionCard(
+                    icon = Icons.Default.CloudOff,
+                    title = "العمل بدون إنترنت (أوفلاين) والاتصال الهجين"
+                ) {
+                    Text(
+                        text = "سياسة التشغيل الذكي:",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        ConnectivityPolicy.entries.forEach { policy ->
+                            FilterChip(
+                                selected = connectivityPolicy == policy,
+                                onClick = { connectivityPolicy = policy },
+                                label = { Text(policy.arabicLabel) }
+                            )
+                        }
+                    }
+
+                    SettingsSwitchRow(
+                        title = "تدريب الأوفلاين تلقائياً من الأونلاين",
+                        subtitle = "يحفظ الردود الناجحة من Gemini محلياً ليعمل بها لاحقاً بدون إنترنت",
+                        checked = autoTrainOffline,
+                        onCheckedChange = { autoTrainOffline = it }
+                    )
+
+                    SettingsSwitchRow(
+                        title = "السماح بضبط المنبهات والتذكيرات",
+                        subtitle = "تنفيذ أوامر المنبه والمؤقت والتذكير أثناء المكالمات تلقائياً",
+                        checked = allowCallerReminders,
+                        onCheckedChange = { allowCallerReminders = it }
+                    )
+                }
+            }
+
+            // Section 2: Stealth Background Power & Floating Overlay
+            item {
+                SettingsSectionCard(
+                    icon = Icons.Default.BatteryChargingFull,
+                    title = "التشغيل الخفي والطاقة والظهور فوق التطبيقات"
+                ) {
+                    SettingsSwitchRow(
+                        title = "وضع الخفاء واستهلاك الطاقة الصفري",
+                        subtitle = "لا يستهلك المعالج أو الميكروفون إلا لحظة ورود مكالمة فعلية",
+                        checked = stealthZeroDrainMode,
+                        onCheckedChange = { stealthZeroDrainMode = it }
+                    )
+
+                    SettingsSwitchRow(
+                        title = "نافذة تحكم عائمة فوق التطبيقات أثناء المكالمات",
+                        subtitle = "إظهار شريط مصغر للتحكم وإنهاء المكالمة فوق أي تطبيق مفتوح",
+                        checked = floatingOverlayEnabled,
+                        onCheckedChange = { floatingOverlayEnabled = it }
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onOpenOverlaySettings,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                        ) {
+                            Icon(Icons.Default.Layers, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (permissions.canDrawOverlays) "فوق التطبيقات: مفعّل" else "إذن فوق التطبيقات",
+                                maxLines = 1
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = onRequestBatteryExemption,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                        ) {
+                            Icon(Icons.Default.BatteryChargingFull, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (permissions.ignoringBatteryOptimizations) "البطارية: مستثنى" else "استثناء البطارية",
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Section 3: AI Engine & Google AI Studio Key
             item {
                 SettingsSectionCard(
                     icon = Icons.Default.AutoAwesome,
                     title = "محرك الذكاء الاصطناعي (Gemini)"
                 ) {
-                    Text(
-                        text = "اختر طريقة الاتصال بنموذج Gemini:",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -182,14 +313,9 @@ fun SettingsScreen(
                                     .testTag("api_key_input")
                             )
 
-                            Text(
-                                text = "النموذج المستخدم:",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 listOf("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash").forEach { model ->
                                     FilterChip(
@@ -219,7 +345,7 @@ fun SettingsScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("جاري اختبار الاتصال...")
                         } else {
-                            Text("اختبار الاتصال بمحرك الذكاء الاصطناعي")
+                            Text("اختبار محرك الذكاء (أونلاين / أوفلاين)")
                         }
                     }
 
@@ -242,7 +368,7 @@ fun SettingsScreen(
                                     )
                                     Column {
                                         Text(
-                                            text = "تم الاتصال بنجاح!",
+                                            text = "تم الفحص بنجاح!",
                                             style = MaterialTheme.typography.labelLarge,
                                             fontWeight = FontWeight.Bold
                                         )
@@ -283,26 +409,21 @@ fun SettingsScreen(
                 }
             }
 
-            // Section 2: Greeting, Persona, Fallback
+            // Section 4: Greeting, Persona, Deflection & Self-Learning
             item {
                 SettingsSectionCard(
                     icon = Icons.Default.RecordVoiceOver,
-                    title = "رسائل الترحيب وشخصية المجيب"
+                    title = "الترحيب وشخصية الفريق والهندلة"
                 ) {
-                    Text(
-                        text = "قوالب شخصية سريعة:",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         FilterChip(
                             selected = false,
                             onClick = {
-                                greetingMessage = "مرحباً بك، أنا المساعد الشخصي الذكي. صاحب الهاتف مشغول حالياً، كيف أساعدك؟"
-                                systemPersona = "أنت سكرتير شخصي مهذب تتحدث العربية الفصحى المبسطة. استعلم عن اسم المتصل وسبب الاتصال ولخّصه بلطف."
+                                greetingMessage = "أهلاً وسهلاً، أنا المساعد الشخصي الذكي. كيف أقدر أساعدك اليوم؟"
+                                systemPersona = "أنت سكرتير شخصي مهذب وذكي يتحدث العربية بطلاقة ودفء. ميّز بين الأصدقاء والعملاء والمزعجين وتصرف بلباقة."
                             },
                             label = { Text("سكرتير شخصي") }
                         )
@@ -310,7 +431,7 @@ fun SettingsScreen(
                             selected = false,
                             onClick = {
                                 greetingMessage = "أهلاً بك في مكتب خدمة العملاء الذكي. تفضل بطرح استفسارك."
-                                systemPersona = "أنت موظف استقبال أعمال محترف ولطيف. أجب باحترافية واطلب تفاصيل الطلب ورقم التواصل إن لزم."
+                                systemPersona = "أنت فريق استقبال أعمال محترف ولطيف. اجمع طلب العميل ورقم التواصل بدقة، وهندل مكالمات التسويق بأدب."
                             },
                             label = { Text("استقبال أعمال") }
                         )
@@ -339,7 +460,7 @@ fun SettingsScreen(
                     OutlinedTextField(
                         value = systemPersona,
                         onValueChange = { systemPersona = it },
-                        label = { Text("توجيهات وشخصية الذكاء الاصطناعي") },
+                        label = { Text("توجيهات وشخصية الفريق الذكي") },
                         minLines = 3,
                         maxLines = 5,
                         shape = RoundedCornerShape(14.dp),
@@ -351,7 +472,7 @@ fun SettingsScreen(
                     OutlinedTextField(
                         value = fallbackMessage,
                         onValueChange = { fallbackMessage = it },
-                        label = { Text("الرد الاحتياطي عند انقطاع الشبكة") },
+                        label = { Text("الرد الاحتياطي الطارئ") },
                         minLines = 2,
                         maxLines = 3,
                         shape = RoundedCornerShape(14.dp),
@@ -359,37 +480,35 @@ fun SettingsScreen(
                             .fillMaxWidth()
                             .testTag("fallback_input")
                     )
+
+                    SettingsSwitchRow(
+                        title = "المراوغة والهندلة الدبلوماسية",
+                        subtitle = "صرف متصلي التسويق والإزعاج بلباقة وإنهاء الاتصال بأدب",
+                        checked = enableDiplomaticDeflection,
+                        onCheckedChange = { enableDiplomaticDeflection = it }
+                    )
+
+                    SettingsSwitchRow(
+                        title = "التطوير الذاتي وحفظ الذاكرة",
+                        subtitle = "يتعلم الفريق من كل مكالمة ويُحدّث تصنيف المتصلين تلقائياً",
+                        checked = enableSelfLearning,
+                        onCheckedChange = { enableSelfLearning = it }
+                    )
                 }
             }
 
-            // Section 3: Call Handling & TTS Audio
+            // Section 5: Call Handling (Answer & Hangup) & TTS Audio
             item {
                 SettingsSectionCard(
                     icon = Icons.Default.PhoneCallback,
-                    title = "المكالمات وإعدادات النطق (TTS)"
+                    title = "المكالمات (الرد والإغلاق) والنطق"
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "الرد التلقائي على المكالمات الواردة",
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                text = "فتح المكالمة تلقائياً بعد انتهاء مهلة الرنين",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = autoAnswerEnabled,
-                            onCheckedChange = { autoAnswerEnabled = it }
-                        )
-                    }
+                    SettingsSwitchRow(
+                        title = "الرد التلقائي على المكالمات الواردة",
+                        subtitle = "فتح المكالمة تلقائياً بعد انتهاء مهلة الرنين",
+                        checked = autoAnswerEnabled,
+                        onCheckedChange = { autoAnswerEnabled = it }
+                    )
 
                     AnimatedVisibility(visible = autoAnswerEnabled) {
                         Column {
@@ -406,37 +525,38 @@ fun SettingsScreen(
                         }
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "تفعيل مكبر الصوت أثناء الرد",
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                text = "يساعد على سماع المتصل للرد الصوتي بوضوح",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = useSpeakerphone,
-                            onCheckedChange = { useSpeakerphone = it }
-                        )
-                    }
+                    SettingsSwitchRow(
+                        title = "الإغلاق التلقائي عند انتهاء الحوار",
+                        subtitle = "يقفل الذكاء الاصطناعي المكالمة تلقائياً بعد الوداع أو إتمام الهدف",
+                        checked = autoHangupEnabled,
+                        onCheckedChange = { autoHangupEnabled = it }
+                    )
+
+                    Text(
+                        text = "الحد الأقصى لتبادل الأدوار في المكالمة الواحدة: $maxTurnsPerCall أدوار",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Slider(
+                        value = maxTurnsPerCall.toFloat(),
+                        onValueChange = { maxTurnsPerCall = it.roundToInt().coerceIn(3, 20) },
+                        valueRange = 3f..20f
+                    )
+
+                    SettingsSwitchRow(
+                        title = "تفعيل مكبر الصوت أثناء الرد",
+                        subtitle = "يساعد على سماع المتصل للرد الصوتي بوضوح",
+                        checked = useSpeakerphone,
+                        onCheckedChange = { useSpeakerphone = it }
+                    )
 
                     Text(
                         text = "لهجة التعرف الصوتي على المتصل:",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         listOf(
                             "ar-SA" to "السعودية",
@@ -487,6 +607,87 @@ fun SettingsScreen(
                 }
             }
 
+            // Section 6: Storage Retention & Auto-Cleanup
+            item {
+                SettingsSectionCard(
+                    icon = Icons.Default.Storage,
+                    title = "إدارة المساحة وحذف السجلات تلقائياً"
+                ) {
+                    val kbUsed = (storageStats.estimatedBytes / 1024L).coerceAtLeast(0L)
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "السجلات المحفوظة: ${storageStats.callLogsCount} • الحجم التقديري: $kbUsed كيلوبايت",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "المساحة الحرة المتوفرة بالجهاز: ${storageStats.availableDeviceMb} ميجابايت",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "حذف سجلات المكالمات الأقدم من:",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(1 to "يوم واحد", 3 to "3 أيام", 7 to "7 أيام", 14 to "14 يوماً", 30 to "30 يوماً")
+                            .forEach { (days, label) ->
+                                FilterChip(
+                                    selected = retentionDays == days,
+                                    onClick = { retentionDays = days },
+                                    label = { Text(label) }
+                                )
+                            }
+                    }
+
+                    Text(
+                        text = "الحد الأقصى للمكالمات المحفوظة (لتوفير المساحة):",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(50, 100, 200).forEach { cap ->
+                            FilterChip(
+                                selected = maxStoredCalls == cap,
+                                onClick = { maxStoredCalls = cap },
+                                label = { Text("$cap مكالمة") }
+                            )
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = onCleanupNow,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("cleanup_storage_button")
+                    ) {
+                        Icon(Icons.Default.CleaningServices, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("تنظيف السجلات القديمة الآن")
+                    }
+                }
+            }
+
             // Save Settings Button
             item {
                 Button(
@@ -512,8 +713,37 @@ fun SettingsScreen(
 }
 
 @Composable
+private fun SettingsSwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
 private fun SettingsSectionCard(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: ImageVector,
     title: String,
     content: @Composable () -> Unit
 ) {

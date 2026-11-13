@@ -25,8 +25,9 @@ data class GeminiContentDto(
 
 @JsonClass(generateAdapter = true)
 data class GeminiGenerationConfigDto(
-    val temperature: Double? = 0.7,
-    val maxOutputTokens: Int? = 320
+    val temperature: Double? = 0.65,
+    val maxOutputTokens: Int? = 450,
+    val responseMimeType: String? = null
 )
 
 @JsonClass(generateAdapter = true)

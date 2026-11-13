@@ -83,6 +83,9 @@ class CallResponderService : Service() {
         ServiceLocator.init(applicationContext)
         createNotificationChannel()
         telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+        ServiceLocator.callSessionManager.registerHangupHandler {
+            endActivePhoneCall()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -127,17 +130,25 @@ class CallResponderService : Service() {
     private fun startMonitoring() {
         ServiceLocator.callSessionManager.onServiceStateChanged(true)
         registerCallStateListener()
+        serviceScope.launch {
+            ServiceLocator.storageRetentionManager.enforceRetentionPolicy()
+        }
 
         if (statusObserverJob?.isActive != true) {
             statusObserverJob = serviceScope.launch {
                 ServiceLocator.callSessionManager.liveState.collect { live ->
+                    val stealth = ServiceLocator.settingsDataStore.getCurrentSettings().stealthZeroDrainMode
                     val statusText = when (live.status) {
                         CallResponderStatus.RINGING -> "مكالمة واردة من ${live.callerNumber}"
                         CallResponderStatus.ACTIVE_CALL -> "الرد الذكي نشط: جاري الاستماع"
                         CallResponderStatus.PROCESSING_AI -> "الذكاء الاصطناعي يجهّز الرد..."
                         CallResponderStatus.SPEAKING -> "بث الرد الصوتي للمتصل..."
                         CallResponderStatus.ERROR -> "تنبيه: ${live.errorMessage ?: "خطأ في الجلسة"}"
-                        CallResponderStatus.LISTENING -> "المجيب الذكي نشط — في انتظار المكالمات"
+                        CallResponderStatus.LISTENING -> if (stealth) {
+                            "وضع توفير الطاقة الخفي مفعّل — استهلاك شبه صفري"
+                        } else {
+                            "المجيب الذكي نشط — في انتظار المكالمات"
+                        }
                         CallResponderStatus.INACTIVE -> "المجيب الذكي متوقف"
                     }
                     updateNotification(statusText)
@@ -329,6 +340,26 @@ class CallResponderService : Service() {
         }
     }
 
+    private fun endActivePhoneCall() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ANSWER_PHONE_CALLS
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            try {
+                val telecom = getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+                @Suppress("DEPRECATION")
+                val ended = telecom?.endCall() ?: false
+                Log.d(TAG, "Auto-hangup via TelecomManager.endCall() -> $ended")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed auto-ending phone call", e)
+            }
+        } else {
+            Log.w(TAG, "Cannot auto-hangup: missing ANSWER_PHONE_CALLS or API < 28")
+        }
+    }
+
     @RequiresApi(Build.VERSION_CODES.S)
     private class ModernCallStateCallback(
         private val onState: (Int) -> Unit
@@ -379,6 +410,8 @@ class CallResponderService : Service() {
             .setContentTitle(getString(R.string.app_name))
             .setContentText(contentText)
             .setOngoing(true)
+            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
             .setOnlyAlertOnce(true)
             .setContentIntent(openPendingIntent)
             .addAction(
@@ -427,6 +460,7 @@ class CallResponderService : Service() {
     }
 
     override fun onDestroy() {
+        ServiceLocator.callSessionManager.registerHangupHandler(null)
         releaseCallWakeLock()
         unregisterCallListener()
         autoAnswerJob?.cancel()

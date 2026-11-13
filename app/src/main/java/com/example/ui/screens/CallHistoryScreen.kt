@@ -5,6 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -48,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.domain.model.CallLogItem
 import com.example.domain.model.CallOutcome
+import com.example.domain.model.CallerCategory
 import com.example.domain.model.Speaker
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -173,7 +176,7 @@ fun CallHistoryScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "ستظهر هنا ملخصات ونصوص المحادثات لكل مكالمة يتعامل معها المجيب الذكي أو جلسة اختبار تجريها.",
+                            text = "ستظهر هنا ملخصات وتصنيفات المتصلين ونصوص المحادثات لكل مكالمة أو جلسة اختبار.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -197,6 +200,7 @@ fun CallHistoryScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CallLogCard(
     item: CallLogItem,
@@ -251,7 +255,11 @@ private fun CallLogCard(
                     )
                     Column {
                         Text(
-                            text = item.callerNumber,
+                            text = if (item.callerName.isNotBlank()) {
+                                "${item.callerName} (${item.callerNumber})"
+                            } else {
+                                item.callerNumber
+                            },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -271,6 +279,60 @@ private fun CallLogCard(
                         text = outcomeText,
                         style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (item.callerCategory != CallerCategory.UNKNOWN) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                    ) {
+                        Text(
+                            text = item.callerCategory.arabicLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Text(
+                        text = item.strategyUsed.arabicLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+                if (item.endedByAi) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer
+                    ) {
+                        Text(
+                            text = "أُغلقت تلقائياً",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (item.handledOffline) {
+                        MaterialTheme.colorScheme.tertiaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                    }
+                ) {
+                    Text(
+                        text = if (item.handledOffline) "أوفلاين" else "أونلاين",
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                     )
                 }
             }

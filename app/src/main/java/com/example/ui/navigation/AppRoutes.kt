@@ -9,4 +9,7 @@ data object DashboardRoute
 data object CallHistoryRoute
 
 @Serializable
+data object TeamMemoryRoute
+
+@Serializable
 data object SettingsRoute
